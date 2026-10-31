@@ -1,126 +1,267 @@
-# CivicDataLab Gender Budget RAG — Azure OpenAI
+Markdown · civicdatalab-readme.md
 
-A compact multilingual RAG implementation over the supplied Union and state gender-budget corpus. Azure OpenAI provides embeddings and English answer generation; Sarvam-105B provides Hindi/Hinglish query understanding and Hindi answer generation. No API keys are committed.
+# 🏛️ CivicDataLab — Gender Budget RAG
 
-## 1. Requirements
-- Python 3.10+
-- An Azure OpenAI resource with one chat deployment and one embedding deployment
-- A Sarvam API key for Hindi/Hinglish understanding and answer generation
-- Network access to that Azure resource
+![Python](https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python&logoColor=white) ![Azure OpenAI](https://img.shields.io/badge/Azure_OpenAI-GPT--4o-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white) ![Sarvam AI](https://img.shields.io/badge/Sarvam_AI-105B-FF6B35?style=for-the-badge&logo=soundcloud&logoColor=white) ![Pinecone](https://img.shields.io/badge/Pinecone-Serverless-00B388?style=for-the-badge&logo=pinecone&logoColor=white) ![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white) ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
-## 2. Setup
+**A compact multilingual RAG system over India's Union and state gender-budget corpus — with hybrid retrieval, deterministic numeric validation, Hindi/Hinglish query routing via Sarvam-105B, and strict abstention for unsupported claims.**
+
+---
+
+## 🌐 Platform Overview
+
+| Capability | Description |
+| --- | --- |
+| **Multilingual Routing** | English → Azure OpenAI; Hindi/Hinglish → Sarvam-105B for query normalization + Hindi answer generation |
+| **Hybrid Retrieval** | Pinecone dense similarity + BM25-style lexical ranking fused via Reciprocal Rank Fusion (RRF) |
+| **Deterministic Numeric Validation** | Unit conversion guard (thousand / lakh / crore / Hindi labels `हजार लाख करोड़`) with crore-equivalent appending |
+| **Source Conflict Detection** | Odisha YoY comparison flags conflicting 15.28% / 18.24% claims instead of silently picking one |
+| **Abstention** | Refuses to answer when evidence does not support the requested year, geography, unit, or scheme |
+| **Conversation History** | SQLite-backed per-session chat history with follow-up resolution and sidebar management |
+| **Evaluation Suite** | 12 gold-labelled dev questions + 18 assignment evaluation questions with JSONL output |
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+graph TD
+    UI["💬 Streamlit Chatbot\napp.py"]
+    CLI["🖥️ CLI\npython -m src.rag ask"]
+
+    LANG{"🌐 Language\nDetection\nDevanagari / Hinglish markers"}
+
+    SARVAM["🇮🇳 Sarvam-105B\nHindi query normalization\n→ English retrieval query\n+ Hindi answer generation"]
+    AZURE_LLM["☁️ Azure OpenAI\nEnglish answer generation\nFollow-up rewriting"]
+
+    REWRITE["✏️ Follow-up\nResolver\nStandalone question rewrite"]
+
+    PIN["🌲 Pinecone Serverless\nDense vector similarity\nstate · year · scope · file metadata"]
+    BM25["📋 Lexical Ranking\nBM25-style local\nkeyword match"]
+    RRF["🔀 RRF Fusion\nReciprocal Rank Fusion"]
+
+    VALID["🔢 Numeric Validator\nUnit conversion guard\nEN + HI unit labels\nCrore equivalent appending"]
+    CONFLICT["⚠️ Source Conflict\nChecker\nOdisha YoY guard"]
+
+    ANS["📤 Answer + Citations\npage · row source refs"]
+    ABSTAIN["🤐 Abstention\nUnsupported claim"]
+
+    SQLITE[("🗄️ SQLite\nchat_history.sqlite3")]
+    AZURE_EMBED["📐 Azure OpenAI\nEmbeddings\n1536-dim batched"]
+
+    UI --> LANG
+    CLI --> LANG
+    LANG -->|Hindi/Hinglish| SARVAM
+    LANG -->|English| AZURE_LLM
+    SARVAM --> REWRITE
+    AZURE_LLM --> REWRITE
+    REWRITE --> PIN
+    REWRITE --> BM25
+    PIN --> RRF
+    BM25 --> RRF
+    RRF --> VALID
+    VALID --> CONFLICT
+    CONFLICT --> ANS
+    CONFLICT --> ABSTAIN
+    UI --> SQLITE
+    PIN --> AZURE_EMBED
+```
+
+---
+
+## 🔄 Query Lifecycle
+
+```mermaid
+graph LR
+    Q["❓ User Question\nEN / HI / Hinglish"]
+    HIST["📜 Chat History\nFollow-up detection"]
+    NORM["🔄 Query Normalization\nSarvam → EN retrieval query\nor Azure rewrite"]
+    FILTER{"📂 Metadata Filter\nstate · year · scope"}
+    RET["🔍 Hybrid Retrieval\nPinecone + BM25 + RRF"]
+    UNIT["🔢 Unit Validation\nthousand · lakh · crore\nHindi labels"]
+    SRC{"⚠️ Source\nConflict?"}
+    GEN["💡 Answer Generation\nAzure OpenAI / Sarvam-105B"]
+    ABS["🤐 Abstain\nNo supporting evidence"]
+    OUT["📤 Answer\n+ page/row citations"]
+
+    Q --> HIST
+    HIST --> NORM
+    NORM --> FILTER
+    FILTER --> RET
+    RET --> UNIT
+    UNIT --> SRC
+    SRC -->|Conflict flagged| GEN
+    SRC -->|No evidence| ABS
+    SRC -->|Clear| GEN
+    GEN --> OUT
+```
+
+---
+
+## 🌐 Model Routing
+
+| Question Type | Detection | Query Normalization | Answer Generation |
+| --- | --- | --- | --- |
+| **English** | Default | Azure OpenAI chat deployment | Azure OpenAI chat deployment |
+| **Hindi / Hinglish** | Devanagari script + Hinglish markers | Sarvam-105B → English retrieval query | Sarvam-105B in Hindi |
+| **Evaluation rows** | `lang` field (deterministic) | Per-language routing | Per-language routing |
+| **Follow-up (EN)** | Conversation history | Azure OpenAI rewrite | Azure OpenAI |
+| **Follow-up (HI)** | Conversation history | Sarvam-105B rewrite | Sarvam-105B |
+
+---
+
+## 🚀 Quick Start
+
 ```bash
+# 1. Create virtual environment
 python -m venv .venv
-# Windows PowerShell:
-.venv\\Scripts\\Activate.ps1
-# macOS/Linux:
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+# macOS / Linux
 # source .venv/bin/activate
+
+# 2. Install dependencies
 pip install -r requirements.txt
-copy .env.example .env   # Windows; use cp on macOS/Linux
-```
-Edit `.env` and set `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_DEPLOYMENT`, and `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`. The deployment variables must be the deployment names configured in Azure, not merely the base model names. Also set `SARVAM_API_KEY` from your Sarvam dashboard. Default Azure API version is `2024-10-21`.
 
-## 3. Build the index and run evaluation
-After updating to this version, rebuild the Pinecone index once because the new retrieval logic adds `state`, `financial_year`, `scope`, and other metadata fields.
-```powershell
+# 3. Configure environment
+copy .env.example .env   # Windows
+# cp .env.example .env   # macOS/Linux
+# Edit .env — fill in the keys below
+
+# 4. Build Pinecone index (first time, or after corpus/schema changes)
 python -m src.rag ingest --reset
+
+# 5. Launch Streamlit chatbot
 streamlit run app.py
-# Run the 12 gold-labelled development regression questions first:
+
+# 6. Run dev regression (12 gold-labelled questions)
 python -m src.rag dev-eval
-# Then run the 18 assignment evaluation questions:
+
+# 7. Run assignment evaluation (18 questions → answers.jsonl)
 python -m src.rag eval
-```
-`python -m src.rag dev-eval` writes `dev_answers.jsonl` with the model answer, gold answer and expected-source-file match. `python -m src.rag eval` writes `answers.jsonl` with one submission-format JSON object for each of the 18 evaluation questions. Inspect the answers and citations before submission. Do not commit `.env` or paste credentials into GitHub.
 
-Ask one question:
-```bash
+# 8. Ask a single question via CLI
 python -m src.rag ask --question "What was Delhi's Ladli Yojna allocation in 2024-25?"
+
+# 9. Run offline regression tests
+python -m unittest discover -s tests
 ```
 
-## Model routing
-- English questions use the Azure OpenAI chat deployment.
-- Hindi/Hinglish questions use Sarvam-105B to normalize the question into an English retrieval query, then generate the final answer in Hindi from retrieved evidence.
-- Azure OpenAI embeddings and Pinecone remain the shared retrieval layer.
-- Evaluation rows use their `lang` field for deterministic routing; interactive questions use Devanagari and common Hinglish markers.
+---
 
-## Design
-- PDFs are split page-by-page, then into overlapping text chunks. PDF page numbers are retained.
-- CSV records are indexed row-wise, preserving column labels and values. XLS records are indexed row-wise with sheet names retained in metadata.
-- Azure embedding vectors are stored in a Pinecone Serverless index with state, financial-year, scope, file, page/row and document-type metadata.
-- Retrieval combines Pinecone dense similarity with local BM25-style lexical ranking using reciprocal-rank fusion. Delhi queries with a specified year are restricted to the matching source PDF; Bihar and Odisha filters preserve multi-year tables within their budget documents.
-- The selected chat model receives retrieved excerpts and strict instructions to abstain when the evidence does not support the requested year, geography, unit, or claim.
-- Output sources use `page` for PDFs and `row` for CSV/XLS records. For spreadsheets, the row number is a physical row number (header-inclusive).
+## ⚙️ Environment Configuration
 
-## Known limitations
-- No OCR is performed. Pages with no extractable PDF text are skipped.
-- Hindi text extraction depends on the PDF's embedded fonts/encoding. Some legacy Hindi PDFs may extract as garbled text; this should be checked manually.
-- Retrieval is a lightweight hybrid dense-plus-keyword approach; it is not a full BM25 service or cross-encoder reranker. OCR is not included.
-- The supplied XLS is read with `xlrd`; if it is malformed or unsupported, it is reported and skipped rather than silently fabricated.
+```env
+# Azure OpenAI
+AZURE_OPENAI_API_KEY=your_key_here
+AZURE_OPENAI_ENDPOINT=https://YOUR_RESOURCE.openai.azure.com/
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o          # deployment name, not model name
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
+# Default API version: 2024-10-21
 
+# Sarvam AI
+SARVAM_API_KEY=your_sarvam_key
+SARVAM_REASONING_EFFORT=none                  # prevents empty replies from reasoning token budget
 
-Sarvam API documentation: https://docs.sarvam.ai/api/token-factory/chat-completions
-
-
-## Streamlit chatbot
-Launch the interactive frontend:
-```bash
-streamlit run app.py
+# Pinecone
+PINECONE_API_KEY=your_pinecone_key
+PINECONE_INDEX_NAME=gender-budget
+PINECONE_NAMESPACE=default
+PINECONE_CLOUD=aws
+PINECONE_REGION=us-east-1
 ```
-The app provides a chatbot for English, Hindi and Hinglish questions, conversation-aware follow-up resolution, SQLite chat history, retrieved source passages and citations, Pinecone index statistics, and the 18-question evaluation runner. In a local deployment, conversations can be reopened or deleted from the sidebar after restarting Streamlit. On Streamlit Community Cloud, local database persistence is not guaranteed. Use the sidebar's **Build / rebuild Pinecone index** button for first-time ingestion.
 
-## Pinecone configuration
-Set `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, `PINECONE_NAMESPACE`, `PINECONE_CLOUD`, and `PINECONE_REGION` in `.env`. The index is created automatically on first ingestion using the exact dimension returned by the configured Azure embedding deployment. If you change embedding deployments/dimensions, rebuild the Pinecone index.
+> ⚠️ Never commit `.env` or paste credentials into GitHub. The SQLite chat database should not be committed if it contains private conversations.
 
+---
 
-## Conversation history and follow-up questions
-- Each conversation is stored in `storage/chat_history.sqlite3` (SQLite).
-- The sidebar lets users create, reopen, clear and delete conversations.
-- The latest conversation turns are passed to a query resolver before retrieval. It rewrites follow-ups such as "What about the previous financial year?" or "Compare that with Bihar" into standalone questions.
-- English follow-ups use the Azure OpenAI chat deployment for rewriting; Hindi/Hinglish follow-ups use Sarvam-105B. The normal answer generation follows the same language routing.
-- The resolved question is shown in the chat UI so users can inspect how the follow-up was interpreted.
-- Chat history is local to the machine running Streamlit. Do not place the SQLite database in a public repository if it contains private conversations.
+## 📂 Document Corpus & Indexing
 
+| Document Type | Indexing Strategy | Source Reference in Answers |
+| --- | --- | --- |
+| **PDF** | Page-by-page split → overlapping text chunks | `page` number (PDF page) |
+| **CSV** | Row-wise indexing, column labels + values preserved | `row` number (header-inclusive) |
+| **XLS** | Row-wise via `xlrd`, sheet name retained in metadata | `row` number |
 
-## Retrieval safeguards and regression tests
-- Delhi year-specific requests are routed only to a source PDF whose contents correspond to that financial year. The file named `gender_budget_2012-13.pdf` contains 2011-12 Annual Plan data, so it is not treated as evidence for 2012-13.
-- The provided corpus includes Bihar and Odisha budget PDFs but no Kerala gender-budget PDF. Kerala-specific requests therefore abstain instead of re-labelling Odisha figures.
-- The corpus contains gender-budget statements, not Delhi's full education-department budget. A request for the total education budget is not answered from gender-specific allocations.
-- Named scheme terms must be present in retrieved evidence. Unsupported schemes such as Mahila Samriddhi Yojana in the supplied Odisha PDF are not guessed.
-- Financial-unit validation checks conversions across thousand, lakh, and crore, including parenthetical conversions, both `Rs 300` / `300 Rs` word orders, and localized output such as `210000 (मूल इकाई: Rs thousand)`. It corrects incorrect equivalents and appends a correct crore equivalent when the source amount is in thousand/lakh. Formulas: Rs thousand / 10,000 = crore; Rs lakh / 100 = crore.
-- Odisha 2024-25 year-on-year comparison questions use a deterministic source consistency check. The answer cites PDF pages 10 and 21 and flags the conflicting 15.28% / 18.24% claims and inconsistent previous-year baselines instead of silently selecting one.
-- `python -m unittest discover -s tests` runs regression tests for numeric conversions (including Hindi answers where the amount appears before a parenthetical source-unit label) and the Odisha source-conflict guard.
-- `python -m src.rag dev-eval` runs the 12 development questions and writes `dev_answers.jsonl` with gold answers and expected-source-file matches for manual regression review.
-- This v3 numeric/source-table patch changes answer validation only; no Pinecone re-ingestion is required. Rebuild with `python -m src.rag ingest --reset` only when the corpus, embedding deployment, or indexed metadata schema changes.
+__Metadata stored per chunk:__ `state`, `financial_year`, `scope`, `file`, `page`/`row`, `document_type`
 
+> Pages with no extractable PDF text are skipped (no OCR). Legacy Hindi PDFs with embedded font issues may extract as garbled text — verify manually.
 
-## Sarvam empty-response fix
-The Sarvam client defaults short JSON/translation calls to `reasoning_effort=none`. Sarvam documents that reasoning tokens count against `max_tokens`; with thinking enabled, the model can use the available completion budget for reasoning and return an empty visible `message.content`. The client retries an empty response once with reasoning disabled and reports `finish_reason` and token details if it still fails. Set `SARVAM_REASONING_EFFORT=none` in your existing `.env` file as well (editing `.env.example` alone does not alter an existing `.env`).
+---
 
+## 🔢 Numeric Validation & Retrieval Safeguards
 
-## Updates for the latest evaluation output
-- E08: The query is expanded with the source table's terminology (`female population`, `Total Population`, `crore`, `Census 2011`). When the exact row is retrieved from Bihar PDF page 15, the female population is read directly from the Bihar Female cell (5.0 crore) and cited to that page.
-- E09: The Sarvam client retries empty visible replies with reasoning disabled. Hindi query translation has fail-soft mappings for the assignment's fixed Hindi questions, so a temporary empty translation response need not abort retrieval.
-- E01-E03: Answers that state a Delhi amount in Rs thousand receive a deterministic crore equivalent. E04-E05: the Union CSV source unit is explicitly recorded as Rs crore.
-- Set `SARVAM_REASONING_EFFORT=none` in your existing `.env` to avoid spending short structured-output requests on hidden reasoning tokens. The client still retries with reasoning disabled if the first reply is empty.
+| Safeguard | Description |
+| --- | --- |
+| **Unit conversion guard** | Validates thousand / lakh / crore conversions; appends crore equivalent when source is in thousand/lakh |
+| **Hindi unit labels** | Handles `हजार`, `लाख`, `करोड़` — prevents `Rs 210,000 thousand` from becoming `Rs 210 crore` (correct: `Rs 21 crore`) |
+| **Crore-equivalent scoping** | Equivalent appended only when unit is directly attached to source amount — no scanning of arbitrary trailing text |
+| **Delhi year-specific routing** | Queries restricted to the PDF whose contents correspond to the requested financial year |
+| **KISHORI column selection** | Delhi 2026-27 KISHORI: `402,200` = 2025-26 RE; `300,000 thousand` = 2026-27 Annual Budget Total Outlay (Rs 30 crore) |
+| **Kerala abstention** | Corpus has no Kerala gender-budget PDF — Kerala requests abstain rather than re-labelling Odisha figures |
+| **Odisha source-conflict guard** | YoY comparison flags conflicting 15.28% / 18.24% claims citing PDF pages 10 and 21 |
+| **Mahila Samriddhi Yojana** | Not present in supplied Odisha PDF — unsupported schemes are not guessed |
+| **Statement 20 BE 2012-13** | Grand-total row read as Rs 88,142.80 crore; rounded Rs 88,143 crore retained in narrative note |
 
-## Numeric and table-column safeguards (31 Oct 2026)
-- Financial-unit validation now handles Hindi as well as English unit labels (`हजार`, `लाख`, `करोड़`) so a generated answer cannot turn Rs 210,000 thousand into Rs 210 crore; the correct equivalent is Rs 21 crore.
-- The Delhi 2026-27 KISHORI row is read from the source PDF's labelled columns. Its first number, 402,200, is the 2025-26 Revised Estimate; its 2026-27 Annual Budget Total Outlay is 300,000 thousand (Rs 30 crore). The deterministic source-table path prevents the prior-year figure from being returned as the new-year allocation.
-- Union Statement 20 BE 2012-13 total is read from the grand-total row as Rs 88,142.80 crore, while the separate narrative note is retained as a rounded Rs 88,143 crore figure.
-- Offline regression coverage includes Hindi conversion, Delhi KISHORI column selection, the precise Statement 20 total, and the Odisha source-conflict case. Run `python -m unittest discover -s tests` before running `python -m src.rag eval` and `python -m src.rag dev-eval`.
+---
 
-### Numeric conversion guard update (v4)
-- Crore-equivalent generation now requires the unit to be directly attached to the source amount, or explicitly present in the same parenthetical unit label. It no longer scans arbitrary trailing text, preventing a later `source unit: Rs thousand` note from being attached to an already-converted crore figure.
-- Hindi parenthetical formats such as `210,000 (210,000 हजार रुपये)` receive the correct ₹21 crore equivalent.
-- Added regression tests for both cases.
+## 💬 Conversation History & Follow-up Resolution
 
+- Chat history stored in `storage/chat_history.sqlite3` — local to the running Streamlit process.
+- Sidebar: create, reopen, clear and delete conversations.
+- Follow-ups like *"What about the previous financial year?"* or *"Compare that with Bihar"* are rewritten into standalone questions before retrieval.
+- The resolved question is shown in the chat UI for transparency.
+- Community Cloud: SQLite is not durable across restarts — use PostgreSQL/Supabase for multi-user or persistent deployments.
 
-## Deploy to Streamlit Community Cloud
+---
 
-1. Push this project directory to a GitHub repository. Keep `app.py`, `requirements.txt`, `src/`, `tests/`, and `data/` at the repository root. Commit the supplied corpus files because the app needs them for lexical fallback and index rebuilding.
-2. Do not commit `.env` or `.streamlit/secrets.toml`. Both are excluded by `.gitignore`. Use `.streamlit/secrets.toml.example` as the key template, then paste the completed TOML values into the app's **Advanced settings → Secrets** field on Streamlit Community Cloud.
-3. The Streamlit entry point is `app.py`. Select the same Python minor version used for local testing (Python 3.13 in the current development environment) when creating the app.
-4. Keep the deployed app private during this demo. The current SQLite schema is shared by all visitors, and the sidebar exposes index rebuild and evaluation actions that can incur API usage. Do not make it publicly accessible until authentication, per-user conversation isolation, and admin-only controls are implemented.
-5. Local SQLite history is not durable on Community Cloud. The platform does not guarantee persistence of files written to the app filesystem across restarts/redeployments. Use a managed database (for example PostgreSQL/Supabase) before relying on long-term or multi-user conversation history.
+## 📊 Evaluation Output
 
-The app bridges flat Streamlit secrets into environment variables before importing `src.rag`, so the existing `os.getenv()` configuration works both locally (`.env`) and on Community Cloud (`st.secrets`). If the ignored local chunk cache is absent after deployment, corpus records are extracted once per running app process and cached in memory for subsequent queries.
+| Command | Output | Description |
+| --- | --- | --- |
+| `python -m src.rag dev-eval` | `dev_answers.jsonl` | 12 gold-labelled dev questions with model answer, gold answer, expected source file |
+| `python -m src.rag eval` | `answers.jsonl` | 18 assignment evaluation questions in submission format |
+| `python -m unittest discover -s tests` | Console | Offline regression: numeric conversion, Hindi labels, KISHORI columns, Odisha conflict guard |
+
+> Inspect answers and citations before submission. Run regression tests before `eval`.
+
+---
+
+## ☁️ Deploy to Streamlit Community Cloud
+
+1. Push `app.py`, `requirements.txt`, `src/`, `tests/`, and `data/` to a GitHub repository root. Commit corpus files (needed for lexical fallback and index rebuilding).
+2. Do **not** commit `.env` or `.streamlit/secrets.toml` — paste TOML values into **Advanced settings → Secrets** on Community Cloud.
+3. Set entry point to `app.py`; match the local Python minor version (3.13 in current dev environment).
+4. **Keep the app private during demo** — SQLite schema is shared across all visitors; index rebuild and evaluation buttons can incur API usage.
+5. Replace SQLite with a managed database (PostgreSQL / Supabase) before multi-user or long-term production use.
+
+---
+
+## ⚠️ Known Limitations
+
+| Area | Limitation |
+| --- | --- |
+| __OCR__ | No OCR performed — pages with no extractable text are skipped |
+| __Hindi PDFs__ | Legacy Hindi PDFs with embedded font issues may extract as garbled text |
+| __Reranker__ | Lightweight RRF hybrid — not a full BM25 service or cross-encoder reranker |
+| __XLS support__ | Read via `xlrd`; malformed files reported and skipped, not silently fabricated |
+| __Capture protection__ | Community Cloud SQLite not durable across platform restarts/redeployments |
+| __Sarvam empty replies__ | Short structured-output calls retry once with `reasoning_effort=none` on empty `message.content` |
+
+---
+
+## 📚 References
+
+| Resource | Link |
+| --- | --- |
+| Sarvam AI API Docs | [docs.sarvam.ai/api/token-factory/chat-completions](https://docs.sarvam.ai/api/token-factory/chat-completions) |
+| Azure OpenAI Embeddings | [learn.microsoft.com — embeddings](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/embeddings) |
+| Pinecone Serverless | [docs.pinecone.io](https://docs.pinecone.io) |
+| pgvector Hybrid / RRF | [github.com/pgvector/pgvector#hybrid-search](https://github.com/pgvector/pgvector#hybrid-search) |
+
+---
+
+**Built by [Alen Thomas](https://github.com/AIstar007) · CivicDataLab Gender Budget Assessment**
+
+[![GitHub](https://img.shields.io/badge/GitHub-AIstar007-181717?style=for-the-badge&logo=github)](https://github.com/AIstar007) [![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?style=for-the-badge&logo=linkedin)](https://linkedin.com/in/alen-thomas-3558bb187/) [![Portfolio](https://img.shields.io/badge/Portfolio-Visit-FF5722?style=for-the-badge&logo=vercel&logoColor=white)](https://portfolio-website-alpha-nine-69.vercel.app/)
