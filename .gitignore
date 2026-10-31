@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+storage/
+.pytest_cache/
+.DS_Store
+
+.streamlit/secrets.toml
+
+answers.jsonl
+dev_answers.jsonl
